@@ -33,8 +33,8 @@ def normalize_phone(raw: str, default_region: str = "US") -> PhoneValidation:
         return PhoneValidation(
             ok=False,
             error=(
-                f"'{text}' does not look like a phone number. Use a format like 555-123-4567, "
-                "(555) 123-4567, or +44 20 7946 0958 for international numbers."
+                f"'{text}' does not look like a phone number. Use a format like 415-555-2671, "
+                "(415) 555-2671, or +44 20 7946 0958 for international numbers."
             ),
         )
     if not phonenumbers.is_valid_number(parsed):
@@ -55,3 +55,11 @@ def normalize_phone(raw: str, default_region: str = "US") -> PhoneValidation:
 def normalize_store_name(name: str) -> str:
     """Canonical key for case-insensitive, whitespace-insensitive store lookups."""
     return " ".join((name or "").split()).casefold()
+
+
+def mask_phone(e164: str) -> str:
+    """Hide all but the last two digits, for displays that sit outside the passphrase gate."""
+    digits = e164.lstrip("+")
+    if len(digits) <= 2:
+        return "*" * len(digits)
+    return "+" + "*" * (len(digits) - 2) + digits[-2:]

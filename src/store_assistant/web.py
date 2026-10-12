@@ -9,7 +9,6 @@ stores, and the history of past conversations with their summaries.
 from __future__ import annotations
 
 import json
-import os
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -21,6 +20,7 @@ from store_assistant.db import Repository, ToolCallRecord
 from store_assistant.demo_model import make_demo_model, make_demo_summary_model
 from store_assistant.runner import ConversationRunner, DailyBudgetExceeded
 from store_assistant.tracing import configure_tracing
+from store_assistant.validation import mask_phone
 
 ROOT = Path(__file__).resolve().parents[2]
 LOGO = ROOT / "assets" / "ndr_logo_clean.png"
@@ -47,11 +47,9 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-if LOGO.exists():
-    st.logo(str(LOGO), size="large")
 
 
-@st.cache_resource
+@st.cache_resource  # type: ignore[untyped-decorator,unused-ignore]
 def _tracing() -> bool:
     return configure_tracing(Settings())
 
@@ -67,6 +65,10 @@ def _new_runner(demo: bool) -> ConversationRunner:
 
 
 def _reset(demo: bool) -> None:
+    previous: ConversationRunner | None = st.session_state.get("runner")
+    if previous is not None:
+        previous.close()  # finish the abandoned session as "aborted" so it gets a summary
+        previous.repo.close()
     runner = _new_runner(demo)
     try:
         runner.start()
@@ -118,7 +120,7 @@ def _render_transcript(repo: Repository, conversation_id: int) -> None:
 # ---- sidebar ------------------------------------------------------------------------------------
 
 tracing_on = _tracing()
-has_key = bool(os.getenv("ANTHROPIC_API_KEY"))
+has_key = bool(Settings().anthropic_api_key)
 
 with st.sidebar:
     if LOGO.exists():
@@ -128,16 +130,19 @@ with st.sidebar:
     demo = st.toggle("Demo mode (no API calls)", value=not has_key, disabled=not has_key)
     if not has_key:
         st.caption("No ANTHROPIC_API_KEY found, so demo mode is forced.")
-    if st.button("New conversation", use_container_width=True, type="primary"):
+    if st.button("New conversation", width="stretch", type="primary"):
         _reset(demo)
 
 if "runner" not in st.session_state:
     _reset(demo)
 
-runner: ConversationRunner | None = st.session_state.runner
-if runner is None or runner.state is None:
+maybe_runner: ConversationRunner | None = st.session_state.runner
+if maybe_runner is None or maybe_runner.state is None:
     st.error(st.session_state.get("error") or "Could not start a conversation.")
     st.stop()
+    raise SystemExit  # unreachable: st.stop() ends the script run
+runner: ConversationRunner = maybe_runner
+assert runner.state is not None
 
 settings = runner.settings
 state = runner.state
@@ -178,10 +183,19 @@ with st.sidebar:
     st.markdown("#### Saved stores")
     stores = repo.list_stores()
     if stores:
+        unlocked = state.passphrase_verified
         st.dataframe(
-            [{"Store": s.name, "Phone": s.phone_e164} for s in stores],
+            [
+                {"Store": s.name, "Phone": s.phone_e164 if unlocked else mask_phone(s.phone_e164)}
+                for s in stores
+            ],
             hide_index=True,
-            use_container_width=True,
+            width="stretch",
+        )
+        st.caption(
+            "Phones unmasked for this session."
+            if unlocked
+            else "Phones are masked until the passphrase is verified in the chat."
         )
     else:
         st.caption("None yet. Try: *Save Trader Joe's, (415) 555-2671*")
@@ -236,7 +250,7 @@ with history_tab:
                 for c in conversations
             ],
             hide_index=True,
-            use_container_width=True,
+            width="stretch",
         )
         chosen = st.selectbox(
             "Open a conversation",
@@ -260,10 +274,13 @@ summary to the database.
 Python enforces everything that must never bend:
 
 - Phone validation and E.164 normalization with libphonenumber. Bad numbers are reprompted.
-- The passphrase is compared in code and never appears in the prompt, the transcript, or the
-  tool-call log. {settings.passphrase_max_attempts} wrong attempts lock lookups for the session.
-- Duplicate store names require an explicit overwrite confirmation.
-- Off-topic turns are counted; on-topic actions reset the count.
+- The passphrase is captured before the message reaches the model and replaced with a
+  placeholder, so the model, the message history, and the traces never see it. It is compared in
+  code; {settings.passphrase_max_attempts} wrong attempts lock lookups for the session.
+- Duplicate store names require an overwrite confirmation that is tracked in session state: the
+  model cannot skip it by setting a flag.
+- Off-topic turns are counted by the model's judgement, but the counting, the reset on a
+  successful on-topic action, and the termination are in code.
 - Spend guardrails: {settings.max_turns_per_session} turns, {settings.max_requests_per_session}
   requests, \\${settings.session_cost_limit_usd} per session, \\${settings.daily_cost_limit_usd}
   per day, prompt caching on.
@@ -272,7 +289,7 @@ Python enforces everything that must never bend:
 (see the History tab or `store-assistant show <id>`). With a Logfire token, every model
 request is also traced with full spans.
 
-**Tests.** 44 pytest cases run with no API key using PydanticAI's `FunctionModel`, plus an
+**Tests.** The pytest suite runs with no API key using PydanticAI's `FunctionModel`, plus an
 opt-in live round trip.
 """
     )

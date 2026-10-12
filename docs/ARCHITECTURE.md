@@ -17,6 +17,7 @@ flowchart TB
 
     subgraph CORE["Conversation engine"]
         RUN["ConversationRunner<br/>runner.py<br/><i>turn loop · termination · summary</i>"]
+        RED["Redaction<br/>redaction.py<br/><i>secret captured before the model</i>"]
         ASY["Background event loop<br/>_async.py"]
         GUARD["Guardrails<br/>guardrails.py<br/><i>UsageLimits · cost · daily cap</i>"]
         AGENT["PydanticAI Agent<br/>agent.py<br/><i>instructions + 5 tools</i>"]
@@ -34,7 +35,7 @@ flowchart TB
     end
 
     subgraph DATA["Persistence · db.py"]
-        DB[("SQLite<br/>stores · conversations<br/>messages · usage_log")]
+        DB[("SQLite<br/>stores · conversations · messages<br/>tool_calls · usage_log")]
     end
 
     subgraph EXT["External"]
@@ -46,7 +47,7 @@ flowchart TB
 
     CLI --> RUN
     WEB --> RUN
-    RUN --> ASY --> AGENT
+    RUN --> RED --> ASY --> AGENT
     RUN --> GUARD
     RUN --> SUMM
     AGENT <-->|"requests / tool calls"| LLM
@@ -122,17 +123,19 @@ stateDiagram-v2
     [*] --> Idle: start() · daily budget OK
     state Idle {
         [*] --> Unverified
-        Unverified --> Verified: verify_passphrase correct
+        Unverified --> Verified: verify_passphrase correct<br/>(secret supplied out-of-band by the runner)
         Unverified --> Unverified: incorrect (attempts < 3)
         Unverified --> Locked: 3rd incorrect
         Verified --> Unverified: lookup done<br/>(only if REQUIRE_PASSPHRASE_PER_LOOKUP)
     }
-    Idle --> Idle: save_store / get_store<br/>(resets off-topic strikes)
+    Idle --> Idle: successful save / verify / lookup<br/>(resets off-topic strikes)
     Idle --> Idle: flag_off_topic<br/>(strikes 1–2)
     Idle --> Ended: end_session → user_done
     Idle --> Ended: flag_off_topic, 3rd strike → off_scope
     Idle --> Ended: turn ≥ MAX_TURNS → turn_limit
     Idle --> Ended: UsageLimitExceeded → budget_limit
+    Idle --> Idle: provider refusal (classifier)<br/>→ retry on fallback model, else apologetic reply
+    Idle --> Ended: unexpected error, or 3 model errors in a row → error
     Idle --> Ended: Ctrl-C / EOF → aborted
     Ended --> Summarized: summarizer (or templated fallback)
     Summarized --> [*]: conversations row updated
@@ -180,7 +183,17 @@ erDiagram
         text estimated_cost_usd
         text created_at
     }
+    TOOL_CALLS {
+        int id PK
+        int conversation_id FK
+        int turn
+        text tool_name
+        text args_json "secret redacted"
+        text result_json "secret redacted"
+        text created_at
+    }
     CONVERSATIONS ||--o{ MESSAGES : "has"
+    CONVERSATIONS ||--o{ TOOL_CALLS : "has"
     CONVERSATIONS ||--o{ USAGE_LOG : "has"
 ```
 
@@ -191,13 +204,13 @@ flowchart LR
     A["start()"] --> B{"cost_today ≥<br/>DAILY_COST_LIMIT?"}
     B -- yes --> X["refuse session"]
     B -- no --> C["send(text)"]
-    C --> D{"turn ≤ MAX_TURNS?"}
-    D -- no --> E["end: turn_limit"]
-    D -- yes --> F["agent.run with shared RunUsage"]
+    C --> F["agent.run with shared RunUsage"]
     F --> G{"UsageLimits<br/>requests · tokens · cost"}
     G -- exceeded --> H["end: budget_limit"]
-    G -- ok --> I["log usage delta → usage_log"]
-    I --> C
+    G -- ok --> I["log usage delta → usage_log<br/>(always, even on error)"]
+    I --> D{"turn ≥ MAX_TURNS?"}
+    D -- yes --> E["end: turn_limit"]
+    D -- no --> C
     E & H --> J["summary saved"]
 ```
 
@@ -216,20 +229,21 @@ flowchart LR
 | Rule | Where | Why not in the prompt |
 |---|---|---|
 | Phone validation | `validation.py`, called by `save_store` | Models hallucinate "valid"; libphonenumber doesn't |
-| Passphrase | `verify_passphrase` compares against config with `hmac.compare_digest` | The model never sees the secret, so it can't leak it or be talked into skipping it |
+| Passphrase | The runner replaces the secret in the user message with a placeholder and tells `verify_passphrase` out-of-band; the tool compares with `hmac.compare_digest` | The model, history, provider, and traces never see the secret, so it can't leak it or be talked into skipping it |
 | Lookup gate | `get_store` returns `passphrase_required` unless state says verified | The gate is a boolean the model can't set |
 | Three-strike lock | `verify_passphrase` counts attempts | Deterministic and testable |
-| Overwrite confirmation | `save_store` returns `needs_confirmation` unless `confirm_overwrite=true` | Prevents silent data loss |
-| Off-topic termination | `flag_off_topic` counts consecutive strikes; on-topic tools reset | "Repeatedly" needs a counter |
+| Overwrite confirmation | `save_store` records the pending store and the turn in `SessionState`; `confirm_overwrite` counts only for that store on a later user turn | The model cannot confirm on its own, in the same turn or by setting the flag early |
+| Off-topic termination | `flag_off_topic` counts strikes; only a *successful* save, verify, or lookup resets them; every tool no-ops once ended | "Repeatedly" needs a counter, and a failed call must not clear it |
 | Turn / request / token / cost caps | `guardrails.py` + runner | Protects whoever's API key is in use |
 | Daily cap | `usage_log` table summed on `start()` | Survives process restarts |
 
-## Data model
+## Tables at a glance
 
 - `stores(id, name, name_normalized UNIQUE, phone_e164, created_at, updated_at)`
 - `conversations(id, started_at, ended_at, end_reason, summary, model, input_tokens, output_tokens, estimated_cost_usd)`
 - `messages(id, conversation_id, turn, role, content, created_at)`
 - `usage_log(id, conversation_id, model, input_tokens, cache_read_tokens, cache_write_tokens, output_tokens, estimated_cost_usd, created_at)`
+- `tool_calls(id, conversation_id, turn, tool_name, args_json, result_json, created_at)`
 
 ## Testing strategy
 
@@ -268,5 +282,13 @@ now would add setup friction for no benefit.
 ## Deliberate limits
 
 - Lookups lock for the whole session after three bad passphrases (simple, safe, documented).
-- Passphrase comparison is case-insensitive and whitespace-trimmed for friendliness.
+- Passphrase comparison is case-insensitive and whitespace-insensitive for friendliness.
+- Off-topic detection itself is the model's judgement. Strikes reset only on a successful save,
+  verify, or found lookup, so a user who interleaves real saves with off-topic chatter is never
+  cut off until the 40-turn cap, by design.
+- Wrong passphrase attempts appear verbatim in the stored user message (the tool-call record
+  always shows the placeholder); only the real secret is redacted everywhere.
+- If the primary model is declined mid-turn after a tool already wrote to the database, the
+  fallback retry sees that write (for example as `needs_confirmation`) rather than undoing it.
+- The daily budget is per database file and checked when a session starts.
 - Cost estimates rely on `genai-prices` data bundled with PydanticAI.

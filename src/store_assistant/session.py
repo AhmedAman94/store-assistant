@@ -1,8 +1,8 @@
 """In-memory state for one conversation.
 
 This object is passed to every tool through PydanticAI dependency injection. The language model
-never sees or controls it, which is what makes the passphrase gate, strike counter, and
-termination rules enforceable.
+never sees or controls it, which is what makes the passphrase gate, strike counter, overwrite
+confirmation, and termination rules enforceable.
 """
 
 from __future__ import annotations
@@ -21,12 +21,16 @@ class SessionState:
     passphrase_attempts: int = 0
     passphrase_locked: bool = False
     off_topic_strikes: int = 0
+    pending_overwrite: str | None = None
+    """Normalized store name awaiting the user's overwrite confirmation, if any."""
+    pending_overwrite_turn: int = 0
+    """Turn on which that confirmation was requested; it only counts on a later user turn."""
     ended: bool = False
     end_reason: EndReason | None = None
     operations: list[str] = field(default_factory=list)
 
     def record(self, event: str) -> None:
-        """Append a short human-readable note used by the summary fallback."""
+        """Append a short human-readable note used by the summary and its fallback."""
         self.operations.append(event)
 
     def end(self, reason: EndReason) -> None:
@@ -35,6 +39,6 @@ class SessionState:
             self.end_reason = reason
 
     def reset_passphrase(self) -> None:
+        """Require the passphrase again for the next lookup. A lock is never lifted."""
         self.passphrase_verified = False
         self.passphrase_attempts = 0
-        self.passphrase_locked = False

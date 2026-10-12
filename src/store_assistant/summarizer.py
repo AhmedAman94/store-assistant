@@ -12,6 +12,7 @@ from pydantic_ai.models import Model
 from pydantic_ai.usage import RunUsage, UsageLimits
 
 from store_assistant._async import run_sync
+from store_assistant.agent import resolve_model
 from store_assistant.config import Settings
 from store_assistant.db import MessageRecord
 from store_assistant.session import EndReason, SessionState
@@ -35,7 +36,9 @@ END_REASON_TEXT: dict[str, str] = {
 
 
 def build_summary_agent(settings: Settings, model: Model | str | None = None) -> Agent[None, str]:
-    chosen = model if model is not None else settings.effective_summary_model
+    chosen = resolve_model(
+        settings, model if model is not None else settings.effective_summary_model
+    )
     return Agent(
         chosen,
         output_type=str,

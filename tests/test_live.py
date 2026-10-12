@@ -12,8 +12,8 @@ from store_assistant.db import Repository
 from store_assistant.runner import ConversationRunner
 
 pytestmark = pytest.mark.skipif(
-    not (os.getenv("RUN_LIVE_TESTS") and os.getenv("ANTHROPIC_API_KEY")),
-    reason="set RUN_LIVE_TESTS=1 and ANTHROPIC_API_KEY to run",
+    not (os.getenv("RUN_LIVE_TESTS") and Settings().anthropic_api_key),
+    reason="set RUN_LIVE_TESTS=1 and ANTHROPIC_API_KEY (or .env) to run",
 )
 
 

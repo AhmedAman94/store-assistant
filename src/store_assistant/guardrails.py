@@ -20,12 +20,24 @@ from store_assistant.db import Repository
 
 def build_usage_limits(settings: Settings, model: str) -> UsageLimits:
     """Session-wide limits. The cost limit is only enforceable for models with pricing data."""
-    priced = model.startswith("anthropic:")
+    priced = _priced(model)
     return UsageLimits(
         request_limit=settings.max_requests_per_session,
         total_tokens_limit=settings.max_tokens_per_session,
         cost_limit=settings.session_cost_limit_usd if priced else None,
     )
+
+
+def _priced(model: str) -> bool:
+    """Whether genai-prices knows this model (so a cost limit can be enforced)."""
+    provider, _, name = model.partition(":")
+    try:
+        calc_price(
+            PriceUsage(input_tokens=1, output_tokens=1), model_ref=name, provider_id=provider
+        )
+    except Exception:
+        return False
+    return True
 
 
 def estimate_cost(usage: RunUsage | RequestUsage, model: str) -> Decimal:
@@ -37,7 +49,7 @@ def estimate_cost(usage: RunUsage | RequestUsage, model: str) -> Decimal:
     cost = getattr(usage, "cost", None)
     if cost is not None:
         return Decimal(str(cost))
-    model_ref = model.split(":", 1)[-1]
+    provider, _, model_ref = model.partition(":")
     try:
         price = calc_price(
             PriceUsage(
@@ -47,7 +59,7 @@ def estimate_cost(usage: RunUsage | RequestUsage, model: str) -> Decimal:
                 output_tokens=usage.output_tokens,
             ),
             model_ref=model_ref,
-            provider_id="anthropic",
+            provider_id=provider or "anthropic",
         )
     except Exception:  # unknown model or pricing data unavailable
         return Decimal("0")
@@ -62,10 +74,6 @@ class BudgetStatus:
     @property
     def exceeded(self) -> bool:
         return self.spent_today_usd >= self.daily_limit_usd
-
-    @property
-    def remaining_usd(self) -> Decimal:
-        return max(self.daily_limit_usd - self.spent_today_usd, Decimal("0"))
 
 
 def check_daily_budget(repo: Repository, settings: Settings) -> BudgetStatus:

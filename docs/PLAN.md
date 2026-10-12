@@ -27,9 +27,9 @@ A conversational agent that saves and retrieves store records, with:
 | Database | SQLite, stdlib `sqlite3`, repository class | Real SQL, zero setup, single inspectable file |
 | Tracing | Pydantic Logfire | One-line integration with PydanticAI; full conversation and tool-call inspection |
 | Phone validation | `phonenumbers`, US default region, international with country code | Normalize to E.164 so formats collapse to one canonical value |
-| Passphrase | From env var `STORE_PASSPHRASE`, default `open sesame`; never in the prompt | Compared in code, three attempts per lookup |
+| Passphrase | From env var `STORE_PASSPHRASE`, default `open sesame`; captured by the runner before the model sees it | Compared in code; three wrong attempts lock lookups for the session |
 | Duplicate store name | Ask the user to confirm overwrite | Safer than silent overwrite |
-| Off-topic policy | Three consecutive off-topic turns end the session | "Repeatedly" interpreted as a strike counter; a related on-topic turn resets it |
+| Off-topic policy | Three off-topic strikes end the session | "Repeatedly" interpreted as a strike counter; only a successful save, verify, or found lookup resets it |
 | UI | Rich CLI first; Streamlit if time allows | Fast to demo and script |
 | Tests | pytest with PydanticAI `TestModel` / `FunctionModel`; one optional live test | Deterministic, no API spend |
 | Key handling | `.env` only, gitignored; `.env.example` committed; reviewers use their own key, or `--demo` mode with no key | Decided: options 1 and 2. A key is never shipped or embedded; it cannot be hidden from someone running the code locally |
@@ -59,14 +59,16 @@ Logfire tracing           every model request, tool call, token usage
 | Tool | Behavior enforced in code |
 |---|---|
 | `save_store(name, phone, confirm_overwrite=False)` | Validates phone; returns structured error on failure. If name exists and not confirmed, returns a "needs confirmation" result so the model asks the user |
-| `verify_passphrase(passphrase)` | Compares against config in code. Sets `passphrase_verified`. Tracks attempts; after 3 failures returns "locked" for the current lookup |
+| `verify_passphrase(passphrase)` | Compares against config in code. Sets `passphrase_verified`. Tracks attempts; after 3 failures lookups are locked for the rest of the session |
 | `get_store(name)` | Refuses unless `passphrase_verified` is true. Case-insensitive lookup. Returns phone or not-found |
 | `flag_off_topic()` | Increments strike counter and returns strikes remaining. Code ends the session at 3 |
-| `end_session(reason)` | Marks session ended with reason `user_done` |
+| `end_session()` | Marks session ended with reason `user_done` |
 
 Design notes:
 
 - The passphrase is verified once per session by default. A config flag can require it per lookup.
+- The runner swaps the secret for a placeholder before the model sees the message, so the model
+  never relays it; the tool is told out-of-band that it was supplied.
 - Tool results are small structured objects (Pydantic models), not free text, so the model's
   behavior is driven by explicit status fields.
 - The system prompt describes scope (store save and retrieve only), the reprompt behavior, and
@@ -81,6 +83,7 @@ Design notes:
 - `messages`: `conversation_id`, `turn`, `role`, `content`, `created_at`. Local transcript so
   past conversations are inspectable without the Logfire dashboard.
 - `usage_log`: per-request usage rows for the daily budget check.
+- `tool_calls`: every tool invocation per turn with redacted arguments and result.
 
 ### Termination and summary flow
 
@@ -108,8 +111,7 @@ can be overridden by env vars.
 | Cost readout | On | CLI footer shows tokens and estimated cost after every turn |
 | Demo mode | `--demo` flag | Scripted fake model; zero API calls; full flow visible |
 
-Price table is a small dict keyed by model id and documented as "estimates, verify against the
-Anthropic pricing page."
+Prices come from the `genai-prices` data bundled with PydanticAI and are documented as estimates.
 
 ## 5. Project layout
 
@@ -131,6 +133,7 @@ ndr_assessment/
     db.py                      Repository over sqlite3, schema migration on startup
     session.py                 SessionState dataclass
     tools.py                   tool result models + tool implementations
+    redaction.py               secret capture before the model, redaction of persisted text
     agent.py                   PydanticAI Agent, system prompt, tool registration
     guardrails.py              UsageLimits, price table, cost accounting, daily budget
     summarizer.py              summary agent + templated fallback
@@ -140,14 +143,15 @@ ndr_assessment/
     cli.py                     Typer app, Rich chat loop
     web.py                     Streamlit UI (stretch)
   tests/
-    conftest.py                temp SQLite, settings override, TestModel fixtures
+    conftest.py                temp SQLite, isolated settings, scripted FunctionModel helpers
     test_validation.py
-    test_save_store.py
-    test_passphrase_gate.py
-    test_retrieve.py
-    test_termination.py
-    test_guardrails.py
-    test_live.py               skipped unless ANTHROPIC_API_KEY and RUN_LIVE_TESTS set
+    test_db.py
+    test_tools.py              every rule enforced in code
+    test_runner.py             termination, redaction, guardrails, error handling
+    test_cli.py                Typer runner with hostile input
+    test_demo.py               full scripted conversation through the demo model
+    test_agent.py
+    test_live.py               skipped unless RUN_LIVE_TESTS is set and a key is configured
 ```
 
 ## 6. Tests
@@ -169,10 +173,10 @@ tool calls is needed. No test spends API credit unless explicitly opted in.
 
 ## 7. Build order and milestones
 
-Status (2026-10-12): all milestones complete. Live verification against Claude Opus 5.5 passed
-(15-turn conversation covering every requirement, $0.08, prompt cache hit rate confirmed). Logfire
-tracing verified through the query API: one trace per conversation with agent, model-request, and
-tool-execution spans carrying token counts and cost.
+Status (2026-10-12): all milestones complete, live-verified against Claude Opus 5.5 with Logfire
+tracing confirmed, then hardened after an independent three-reviewer audit (code-enforced
+overwrite confirmation, out-of-band passphrase capture, full redaction, error handling, masked
+phone displays, environment-isolated tests).
 
 1. **Scaffold.** `uv init`, pyproject with deps, ruff and mypy config, `.env.example`,
    `.gitignore`, `git init`. Exit criterion: `uv run pytest` runs an empty suite.
@@ -189,7 +193,7 @@ tool-execution spans carrying token counts and cost.
 ## 8. Dependencies
 
 Runtime: `pydantic-ai-slim[anthropic,logfire]`, `pydantic-settings`, `phonenumbers`, `typer`,
-`rich`, `python-dotenv`. Dev: `pytest`, `pytest-asyncio`, `ruff`, `mypy`, `pre-commit`.
+`rich`, `genai-prices`. Dev: `pytest`, `ruff`, `mypy`, `pre-commit`.
 Stretch: `streamlit`. Exact versions pinned in `uv.lock`.
 
 ## 9. Design notes for discussion

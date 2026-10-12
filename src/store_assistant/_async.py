@@ -34,4 +34,8 @@ def _get_loop() -> asyncio.AbstractEventLoop:
 def run_sync[T](coro: Coroutine[Any, Any, T]) -> T:
     """Block until `coro` completes on the shared background loop and return its result."""
     future = asyncio.run_coroutine_threadsafe(coro, _get_loop())
-    return future.result()
+    try:
+        return future.result()
+    except KeyboardInterrupt:
+        future.cancel()
+        raise

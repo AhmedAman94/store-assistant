@@ -1,15 +1,20 @@
-"""Shared fixtures. No test here calls a real model; see test_live.py for the opt-in live check."""
+"""Shared fixtures. No test here calls a real model; see test_live.py for the opt-in live check.
+
+Settings are built with `_env_file=None` and every Settings environment variable is removed, so
+the suite behaves identically regardless of the developer's `.env` or shell.
+"""
 
 from __future__ import annotations
 
 import os
 from collections import deque
-from collections.abc import Iterable
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
+from pydantic_ai import RunContext
 from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
@@ -21,6 +26,13 @@ from store_assistant.tools import Deps
 os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")
 
 
+@pytest.fixture(autouse=True)
+def _isolated_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    for field in Settings.model_fields:
+        monkeypatch.delenv(field.upper(), raising=False)
+    monkeypatch.chdir(tmp_path)  # no .env in reach
+
+
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
     return Settings(
@@ -28,11 +40,13 @@ def settings(tmp_path: Path) -> Settings:
         db_path=tmp_path / "test.db",
         store_passphrase="open sesame",
         llm_model="test:test",
+        anthropic_api_key=None,
+        logfire_token=None,
     )
 
 
 @pytest.fixture
-def repo(settings: Settings) -> Iterable[Repository]:
+def repo(settings: Settings) -> Iterator[Repository]:
     repository = Repository(settings.db_path)
     yield repository
     repository.close()
@@ -56,8 +70,8 @@ class FakeCtx:
 
 
 @pytest.fixture
-def ctx(deps: Deps) -> FakeCtx:
-    return FakeCtx(deps=deps)
+def ctx(deps: Deps) -> RunContext[Deps]:
+    return cast(RunContext[Deps], FakeCtx(deps=deps))
 
 
 def say(text: str) -> ModelResponse:

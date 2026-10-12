@@ -133,6 +133,7 @@ class Repository:
         self._conn.row_factory = sqlite3.Row
         with self._lock:
             self._conn.execute("PRAGMA foreign_keys = ON")
+            self._conn.execute("PRAGMA busy_timeout = 5000")
             self._conn.executescript(SCHEMA)
 
     def close(self) -> None:
@@ -143,12 +144,21 @@ class Repository:
         with self._lock:
             return self._conn.execute(sql, params)
 
+    def _fetchone(self, sql: str, params: tuple[object, ...] = ()) -> sqlite3.Row | None:
+        with self._lock:
+            row: sqlite3.Row | None = self._conn.execute(sql, params).fetchone()
+            return row
+
+    def _fetchall(self, sql: str, params: tuple[object, ...] = ()) -> list[sqlite3.Row]:
+        with self._lock:
+            return list(self._conn.execute(sql, params).fetchall())
+
     # ---- stores -------------------------------------------------------------------------------
 
     def get_store(self, name: str) -> StoreRecord | None:
-        row = self._execute(
+        row = self._fetchone(
             "SELECT * FROM stores WHERE name_normalized = ?", (normalize_store_name(name),)
-        ).fetchone()
+        )
         return _store_from_row(row) if row else None
 
     def save_store(self, name: str, phone_e164: str) -> tuple[StoreRecord, bool]:
@@ -156,26 +166,31 @@ class Repository:
         clean_name = " ".join(name.split())
         key = normalize_store_name(clean_name)
         now = _now()
-        existing = self.get_store(clean_name)
-        if existing is None:
-            self._execute(
-                "INSERT INTO stores (name, name_normalized, phone_e164, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (clean_name, key, phone_e164, now, now),
-            )
-            created = True
-        else:
-            self._execute(
-                "UPDATE stores SET name = ?, phone_e164 = ?, updated_at = ? WHERE id = ?",
-                (clean_name, phone_e164, now, existing.id),
-            )
-            created = False
-        record = self.get_store(clean_name)
+        # One critical section for read-then-write so concurrent saves of the same name
+        # (tools run sequentially, but the CLI, web UI, and tests share this class) cannot race.
+        with self._lock:
+            existing = self.get_store(clean_name)
+            if existing is None:
+                self._conn.execute(
+                    "INSERT INTO stores (name, name_normalized, phone_e164, created_at, "
+                    "updated_at) VALUES (?, ?, ?, ?, ?) "
+                    "ON CONFLICT(name_normalized) DO UPDATE SET name = excluded.name, "
+                    "phone_e164 = excluded.phone_e164, updated_at = excluded.updated_at",
+                    (clean_name, key, phone_e164, now, now),
+                )
+                created = True
+            else:
+                self._conn.execute(
+                    "UPDATE stores SET name = ?, phone_e164 = ?, updated_at = ? WHERE id = ?",
+                    (clean_name, phone_e164, now, existing.id),
+                )
+                created = False
+            record = self.get_store(clean_name)
         assert record is not None
         return record, created
 
     def list_stores(self) -> list[StoreRecord]:
-        rows = self._execute("SELECT * FROM stores ORDER BY name_normalized").fetchall()
+        rows = self._fetchall("SELECT * FROM stores ORDER BY name_normalized")
         return [_store_from_row(r) for r in rows]
 
     # ---- conversations --------------------------------------------------------------------------
@@ -212,15 +227,11 @@ class Repository:
         )
 
     def get_conversation(self, conversation_id: int) -> ConversationRecord | None:
-        row = self._execute(
-            "SELECT * FROM conversations WHERE id = ?", (conversation_id,)
-        ).fetchone()
+        row = self._fetchone("SELECT * FROM conversations WHERE id = ?", (conversation_id,))
         return _conversation_from_row(row) if row else None
 
     def list_conversations(self, limit: int = 50) -> list[ConversationRecord]:
-        rows = self._execute(
-            "SELECT * FROM conversations ORDER BY id DESC LIMIT ?", (limit,)
-        ).fetchall()
+        rows = self._fetchall("SELECT * FROM conversations ORDER BY id DESC LIMIT ?", (limit,))
         return [_conversation_from_row(r) for r in rows]
 
     # ---- messages -------------------------------------------------------------------------------
@@ -233,11 +244,11 @@ class Repository:
         )
 
     def get_transcript(self, conversation_id: int) -> list[MessageRecord]:
-        rows = self._execute(
+        rows = self._fetchall(
             "SELECT turn, role, content, created_at FROM messages WHERE conversation_id = ? "
             "ORDER BY id",
             (conversation_id,),
-        ).fetchall()
+        )
         return [
             MessageRecord(
                 turn=r["turn"], role=r["role"], content=r["content"], created_at=r["created_at"]
@@ -264,11 +275,11 @@ class Repository:
         )
 
     def get_tool_calls(self, conversation_id: int) -> list[ToolCallRecord]:
-        rows = self._execute(
+        rows = self._fetchall(
             "SELECT turn, tool_name, args_json, result_json, created_at FROM tool_calls "
             "WHERE conversation_id = ? ORDER BY id",
             (conversation_id,),
-        ).fetchall()
+        )
         return [
             ToolCallRecord(
                 turn=r["turn"],
@@ -310,9 +321,9 @@ class Repository:
         )
 
     def cost_since(self, since_iso: str) -> Decimal:
-        rows = self._execute(
+        rows = self._fetchall(
             "SELECT estimated_cost_usd FROM usage_log WHERE created_at >= ?", (since_iso,)
-        ).fetchall()
+        )
         return sum((Decimal(r["estimated_cost_usd"]) for r in rows), Decimal("0"))
 
     def cost_today(self) -> Decimal:

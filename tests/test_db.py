@@ -53,5 +53,34 @@ def test_cost_today_sums_only_todays_usage(repo: Repository) -> None:
             estimated_cost_usd=Decimal(cost),
         )
     assert repo.cost_today() == Decimal("0.35")
+    # An older row must not count toward today.
+    yesterday = (datetime.now(UTC) - timedelta(days=2)).isoformat(timespec="seconds")
+    repo._execute(
+        "INSERT INTO usage_log (conversation_id, model, input_tokens, cache_read_tokens, "
+        "cache_write_tokens, output_tokens, estimated_cost_usd, created_at) "
+        "VALUES (?, 'x', 1, 0, 0, 1, '9.00', ?)",
+        (conversation_id, yesterday),
+    )
+    assert repo.cost_today() == Decimal("0.35")
     tomorrow = (datetime.now(UTC) + timedelta(days=1)).isoformat(timespec="seconds")
     assert repo.cost_since(tomorrow) == Decimal("0")
+
+
+def test_concurrent_saves_of_the_same_name_do_not_race(repo: Repository) -> None:
+    import threading
+
+    errors: list[Exception] = []
+
+    def save(phone: str) -> None:
+        try:
+            repo.save_store("Race Mart", phone)
+        except Exception as exc:  # pragma: no cover - the point is that this never happens
+            errors.append(exc)
+
+    threads = [threading.Thread(target=save, args=(p,)) for p in ("+14155550101", "+14155550102")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == []
+    assert len(repo.list_stores()) == 1

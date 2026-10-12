@@ -55,6 +55,29 @@ def test_demo_conversation_covers_every_requirement(settings: Settings, repo: Re
     assert "open sesame" not in conversation.summary
 
 
+def test_demo_model_does_not_end_on_store_names_containing_done(
+    settings: Settings, repo: Repository
+) -> None:
+    runner = ConversationRunner(
+        settings, repo, model=make_demo_model(), summary_model=make_demo_summary_model()
+    )
+    runner.start()
+    result = runner.send("save Done Deal Pawn 415-555-0109")
+    assert not result.ended and "Done Deal Pawn" in result.reply
+
+
+def test_demo_model_ends_session_when_done_is_said_at_passphrase_prompt(
+    settings: Settings, repo: Repository
+) -> None:
+    runner = ConversationRunner(
+        settings, repo, model=make_demo_model(), summary_model=make_demo_summary_model()
+    )
+    runner.start()
+    runner.send("look up Costco")
+    result = runner.send("I'm done")
+    assert result.ended and result.end_reason == "user_done"
+
+
 def test_extract_phone_handles_common_formats() -> None:
     assert extract_phone("call 415-555-2671 please")[0] == "415-555-2671"
     assert extract_phone("+44 20 7946 0958")[0] == "+44 20 7946 0958"

@@ -4,7 +4,7 @@ A conversational agent that saves and retrieves store phone numbers, built for t
 take-home (`instructions/applied-ai-takehome.pdf`). Python, PydanticAI, Claude Opus 5.5, SQLite,
 Logfire.
 
-## Start here: watch the 3.5-minute demo
+## Start here: watch the 4-minute demo
 
 ![Store Assistant demo](assets/demo.gif)
 
@@ -37,7 +37,8 @@ Python and visible as a tool result. See [docs/ARCHITECTURE.md](docs/ARCHITECTUR
 - Any number of saves and lookups per session, in any order.
 - Ends on "I'm done" style messages or repeated off-topic requests, then writes a summary to
   the database.
-- Every LLM call is traced (Logfire) and every transcript and tool call is stored locally.
+- Every transcript, tool call, and usage row is stored locally; with a Logfire token, every LLM
+  call is also traced.
 - Spend guardrails are built in so the app can't run away with anyone's API credits.
 
 ## Stack
@@ -86,9 +87,10 @@ Summary saved (reason: user_done)
 Other commands:
 
 ```bash
-uv run store-assistant stores            # saved stores
+uv run store-assistant stores            # saved stores (phones masked; --show-phones to reveal)
 uv run store-assistant conversations     # past sessions with summaries and cost
-uv run store-assistant show 1            # transcript + summary for conversation 1
+uv run store-assistant show 1            # transcript, tool calls, and summary for conversation 1
+uv run store-assistant --db other.db     # any command can point at a different SQLite file
 uv run store-assistant --verbose                            # show tool calls per reply
 uv run store-assistant --model anthropic:claude-haiku-5-5   # cheaper model
 ```
@@ -96,7 +98,7 @@ uv run store-assistant --model anthropic:claude-haiku-5-5   # cheaper model
 Web UI (Streamlit):
 
 ```bash
-uv sync --extra web
+uv sync --extra web          # a plain `uv sync` later removes the extra again; re-run this if so
 uv run streamlit run src/store_assistant/web.py
 ```
 
@@ -110,16 +112,19 @@ their summaries. The CLI has the same inspector behind `--verbose`.
 ## Tests
 
 ```bash
-uv run pytest                 # 44 tests, no API key needed, under a second
+uv run pytest                 # offline test suite, no API key needed, about a second
 uv run ruff check . && uv run mypy
 RUN_LIVE_TESTS=1 uv run pytest tests/test_live.py -s   # one real round trip, costs a few cents
 ```
 
 What the tests cover: phone validation across formats, case-insensitive save and update,
-duplicate-name confirmation, the passphrase gate and three-strike lock, off-topic strikes,
-both termination paths with the saved summary, the turn and request guardrails, the daily
-budget, summary fallback when the model fails, per-turn usage logging, and a full scripted
-conversation through the demo model.
+code-enforced overwrite confirmation, the passphrase gate and three-strike lock, that the
+passphrase never reaches the model or any stored channel, off-topic strikes resetting only on
+successful actions, tools refusing to act after the session ends, both termination paths with
+the saved summary, the turn and request guardrails, the daily budget, transient and unexpected
+model errors, summary fallback, per-turn usage logging, concurrent saves, the CLI with hostile
+input, and a full scripted conversation through the demo model. The suite runs from a temporary
+directory with every setting variable cleared, so it behaves the same on any machine.
 
 ## Tracing
 
@@ -127,7 +132,8 @@ Set `LOGFIRE_TOKEN` in `.env` (free account at logfire.pydantic.dev) and every a
 request, tool call, and token count appears in the Logfire dashboard, grouped by conversation.
 Without a token the instrumentation is a no-op. Independently of Logfire, the full transcript,
 every tool call with its arguments and result, end reason, summary, and per-request usage are
-stored in SQLite and viewable with `store-assistant show <id>` or the web UI's History tab.
+stored in SQLite and viewable with `store-assistant show <id>` or the web UI's History tab, so
+past conversations are inspectable with no account at all.
 
 ## How it works
 
@@ -146,12 +152,20 @@ Tools: `save_store`, `verify_passphrase`, `get_store`, `flag_off_topic`, `end_se
 Rules enforced in code, not in the prompt:
 
 - Phone validation and E.164 normalization (`validation.py`).
-- The passphrase check. The passphrase is never in the prompt; the model cannot leak or skip it.
-  Three wrong attempts lock lookups for the session.
-- Overwrite confirmation for duplicate store names.
-- Off-topic strike counting (three consecutive strikes end the session).
+- The passphrase check. The runner captures the passphrase from the user's message *before* the
+  model sees it and swaps in a placeholder, so the model, the message history, the provider, and
+  Logfire never receive the secret. The comparison happens in the tool, three wrong attempts
+  lock lookups for the session, and every persisted string is redacted as a second layer.
+- Overwrite confirmation for duplicate store names, tracked in session state: the flag only
+  counts for the store that was flagged, and only on a later user turn, so the model cannot
+  confirm on the user's behalf.
+- Off-topic strike counting and termination. Detecting that a message is off-topic is the
+  model's judgement; counting, resetting only on a successful save, verify, or found lookup, and
+  ending the session are code.
+- Every tool refuses to act once the session has ended.
 - Turn, request, token, and cost ceilings per session, and a daily cost ceiling across sessions.
-- The passphrase is redacted from stored transcripts and the summary prompt.
+- Phone numbers are masked in the web sidebar and the `stores` command until the passphrase has
+  been verified, so the gate is a property of the app, not just the chat.
 
 ## Configuration
 
@@ -166,6 +180,7 @@ All settings are environment variables (or `.env`); see `.env.example`. Notable 
 | `SESSION_COST_LIMIT_USD` | 0.50 | Per-session cost ceiling |
 | `DAILY_COST_LIMIT_USD` | 5.00 | Refuses new sessions past this |
 | `PROMPT_CACHING` | true | Caches the system prompt and tools on Anthropic |
+| `REFUSAL_FALLBACK` | true | Retry classifier-declined turns on `FALLBACK_MODEL` (default `anthropic:claude-opus-4-8`) |
 
 ## Known limits
 
@@ -175,6 +190,14 @@ For how each of these would be addressed in production, see the "Production path
 
 - Single-user, local SQLite; not designed for concurrent sessions.
 - Cost figures come from PydanticAI's pricing table and are estimates.
-- Logfire traces contain message content; the passphrase is scrubbed by pattern, but treat the
-  dashboard as sensitive.
+- Logfire traces contain message content. The passphrase itself never reaches the model or the
+  traces, but wrong attempts and store names do, so treat the dashboard as sensitive. Transcripts
+  and summaries shown by `show` and the History tab include phone numbers; those views are the
+  local audit trail, not the gated lookup.
+- A store name containing the passphrase is rejected, so the secret never lands in the stores
+  table either.
+- Anthropic's safety classifiers can decline a request that looks like credential guessing (for
+  example several wrong passphrases in a row). The runner retries a declined turn on a fallback
+  model (`FALLBACK_MODEL`, default Claude Opus 4.8) after restoring session state, so no attempt
+  is double-counted; if that is declined too, the assistant says so and the session continues.
 - The `--demo` model is keyword-driven and only understands plain phrasing.

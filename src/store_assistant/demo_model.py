@@ -123,6 +123,8 @@ def _on_user_text(messages: list[ModelMessage], text: str) -> ModelResponse:
         return _say(f"I still need a phone number. What's the phone number for {name}?")
 
     if m := ASK_PASS_RE.search(previous):
+        if DONE_RE.search(text) and not SAVE_RE.search(text):
+            return _call("end_session", {})
         return _call("verify_passphrase", {"passphrase": text.strip()})
 
     if m := ASK_OVERWRITE_RE.search(previous):
@@ -132,7 +134,10 @@ def _on_user_text(messages: list[ModelMessage], text: str) -> ModelResponse:
         if NO_RE.match(text):
             return _say(f"Okay, I left {name} unchanged. Anything else?")
 
-    if DONE_RE.search(text):
+    has_intent = bool(
+        SAVE_RE.search(text) or LOOKUP_RE.search(text) or LOOKUP_PHONE_RE.search(text)
+    )
+    if DONE_RE.search(text) and not has_intent:
         return _call("end_session", {})
 
     if m := LOOKUP_PHONE_RE.search(text) or LOOKUP_RE.search(text):
