@@ -124,7 +124,7 @@ has_key = bool(Settings().anthropic_api_key)
 
 with st.sidebar:
     if LOGO.exists():
-        st.image(str(LOGO), width=190)
+        st.image(str(LOGO), width=150)
     st.markdown("### Store Assistant")
     st.caption("Applied AI take-home · PydanticAI + Claude")
     demo = st.toggle("Demo mode (no API calls)", value=not has_key, disabled=not has_key)

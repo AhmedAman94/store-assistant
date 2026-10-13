@@ -9,7 +9,7 @@ Logfire.
 ![Store Assistant demo](assets/demo.gif)
 
 **Full-resolution video with sound-free captions: [assets/demo.mp4](assets/demo.mp4)**
-(2.4 MB; click, then "View raw" or download to play).
+(3.1 MB; click, then "View raw" or download to play).
 
 It was recorded by driving the real web UI with Playwright against Claude Opus 5.5, so it shows
 the actual product path, not a mock. Each phase is captioned. In order:
@@ -17,7 +17,7 @@ the actual product path, not a mock. Each phase is captioned. In order:
 | Time (approx.) | What you'll see |
 |---|---|
 | 0:00 | Saving a store: name and phone collected across turns, an invalid phone rejected in code and reprompted, a valid one normalized to E.164 |
-| 0:40 | One-message save, then the sidebar's saved-stores table and live session stats against the spend guardrails |
+| 0:40 | One-message save, then the sidebar: live session stats against the spend guardrails, passphrase status, the demo passphrase hint, and the saved-stores table with masked phones |
 | 0:55 | The passphrase gate: a wrong attempt counted, then success, with both tool calls shown in the inspector |
 | 1:20 | Duplicate store name requiring an explicit overwrite confirmation |
 | 1:35 | The agent refusing to reveal the passphrase, and an unknown-store lookup |
