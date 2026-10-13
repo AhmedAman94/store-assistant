@@ -1,8 +1,13 @@
 # Store Assistant
 
-A conversational agent that saves and retrieves store phone numbers, built for the Applied AI
-take-home (`instructions/applied-ai-takehome.pdf`). Python, PydanticAI, Claude Opus 5.5, SQLite,
-Logfire.
+A conversational agent that saves and retrieves store phone numbers, built for an Applied AI
+take-home assignment. Python, PydanticAI, Claude Opus 5.5, SQLite, Logfire.
+
+The brief, in short: an LLM agent that saves a store's name and phone (validating the phone and
+reprompting on bad input), retrieves a store's phone by name only after a secret passphrase,
+supports any number of operations per session, ends on "I'm done" or repeated off-topic
+requests, and then writes a concise summary to the database. Any Python LLM framework and
+database, tracing of LLM calls, at least two tests, and a local demo UI.
 
 ## Start here: watch the 4-minute demo
 

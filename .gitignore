@@ -10,3 +10,4 @@ __pycache__/
 .logfire/
 dist/
 .DS_Store
+instructions/

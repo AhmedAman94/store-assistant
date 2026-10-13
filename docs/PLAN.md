@@ -1,6 +1,6 @@
 # Store Assistant: End-to-End Build Plan
 
-Source spec: `instructions/applied-ai-takehome.pdf`. This plan records every decision made
+This plan records every decision made
 during planning and the order the build followed.
 
 ## 1. Goal
