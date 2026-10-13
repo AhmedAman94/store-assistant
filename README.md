@@ -35,6 +35,19 @@ What the demo illustrates about the design: the model picks tools and phrasing, 
 that must hold (validation, the passphrase gate, strikes, confirmation, budgets) is enforced in
 Python and visible as a tool result. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
+## Evaluate this in ten minutes
+
+1. **Watch the demo above** (or open `assets/demo.mp4`). Every requirement appears in it, captioned.
+2. **Run it with no key:** `uv sync && uv run store-assistant --demo`. Save a store, look it up
+   with `open sesame`, say "I'm done". The rule-based demo model drives the real tools, database,
+   guardrails, and summary.
+3. **Run the tests:** `uv run pytest`. 69 cases, about a second, no network.
+4. **Open the web UI** (`uv sync --extra web && uv run streamlit run src/store_assistant/web.py`)
+   and expand "tool calls this turn" under any reply to see exactly what the model invoked and
+   what came back. The History tab shows every past conversation with its saved summary.
+5. **Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for the diagrams, then the two sections
+   below: *Design decisions* and *How it was verified*.
+
 ## What it does
 
 - Save a store by name and phone, with phone validation and reprompting.
@@ -171,6 +184,64 @@ Rules enforced in code, not in the prompt:
 - Turn, request, token, and cost ceilings per session, and a daily cost ceiling across sessions.
 - Phone numbers are masked in the web sidebar and the `stores` command until the passphrase has
   been verified, so the gate is a property of the app, not just the chat.
+
+## Design decisions
+
+**Rules live in code, not in the prompt.** A prompt instruction can be argued out of; a tool that
+checks state the model cannot see cannot. So the model decides *which* tool to call and how to
+phrase replies, and every rule that must hold (validation, the passphrase gate, attempt locking,
+overwrite confirmation, strikes, termination, budgets) is enforced inside the tools and the runner,
+returned to the model as a status it has to work with.
+
+**The passphrase is captured before the model sees it.** The runner finds the secret in the
+user's message, swaps in a placeholder, and signals the verify tool out-of-band. The model never
+needs to relay the secret, so there is nothing to leak into the message history, the provider, or
+the traces. Every string that is persisted is redacted as a second layer.
+
+**PydanticAI.** Typed tools with dependency injection make the session state explicit; the
+built-in `UsageLimits` and cost accounting back the spend guardrails; `FunctionModel` lets the
+whole runner be tested offline with scripted tool calls; and tracing is one line. The model is a
+single config value, so the same code runs on any provider PydanticAI supports.
+
+**Claude Opus 5.5 with prompt caching and hard caps.** Judgement-heavy chat (is this message
+off-topic? is this a passphrase attempt?) benefits from the stronger model, and caching keeps a
+typical conversation under ten cents. Per-session and daily caps mean no key, yours or a
+reviewer's, can run away.
+
+**SQLite behind one repository class.** Zero setup, a single file a reviewer can open, and the
+only module that knows SQL. The transcript, tool calls, usage, and summaries live there, so past
+conversations are inspectable with no external account.
+
+**Strikes reset only on a successful on-topic action.** A failed save or a wrong passphrase is not
+progress, so it does not clear off-topic strikes. "Repeatedly" is a counter, and the counter is
+code.
+
+**A demo mode with zero API calls.** A reviewer without a key can still exercise the entire
+pipeline, and the test suite uses the same path to prove the system end to end without spend.
+
+## How it was verified
+
+- **Live conversations against Claude Opus 5.5** covering every requirement: invalid phone then
+  a corrected one, duplicate-name confirmation, a wrong passphrase then the right one, a request
+  to reveal the passphrase (refused), an unknown store, three off-topic turns ending the session,
+  and the saved summary. Traces for these runs were read back from Logfire through its query API.
+- **Three independent review passes**, each starting cold from the repository with no knowledge
+  of how it was built: a code-correctness review, a requirements-and-first-run review that
+  followed this README literally, and an adversarial security review that ran twelve live attacks
+  (social engineering, prompt injection through store names, passphrase fishing, strike-reset
+  tricks, mixed-intent messages, hostile validation inputs, post-lock overrides).
+- **What the reviews found, and what changed:** overwrite confirmation had been trusted to the
+  model (now tracked in session state and valid only on a later user turn); passphrase redaction
+  covered one channel (now the secret never reaches the model and every persisted string is
+  redacted); phone numbers were listed outside the gate (now masked until verified); the CLI
+  crashed on bracket markup; tests depended on the developer's `.env`; an unexpected exception
+  mid-turn skipped spend accounting; strikes reset on failed calls; abandoned web sessions never
+  got a summary; and the provider's safety classifier declined requests that looked like
+  credential guessing (now retried on a fallback model with session state restored). Each fix has
+  a test, and the two headline fixes were re-verified live. A fourth, re-verification pass
+  confirmed ten of twelve claimed fixes outright and found the two gaps that were then closed.
+- **Every attack that targeted the gates was blocked by a tool result, not by the model's
+  goodwill.** What remains is listed honestly under *Known limits*.
 
 ## Configuration
 
