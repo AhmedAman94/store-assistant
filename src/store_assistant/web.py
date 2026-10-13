@@ -177,6 +177,10 @@ with st.sidebar:
     st.markdown(
         f"**Off-topic strikes:** {state.off_topic_strikes} / {settings.off_topic_strike_limit}"
     )
+    st.caption(
+        f"Demo passphrase: `{settings.store_passphrase}` "
+        "(set STORE_PASSPHRASE in .env to change). The assistant itself never reveals it."
+    )
     st.caption("Logfire tracing: " + ("on" if tracing_on else "off (set LOGFIRE_TOKEN)"))
 
     st.divider()

@@ -49,7 +49,9 @@ def test_verbose_shows_tool_calls_and_redacts_passphrase(tmp_path: Path) -> None
     assert result.exit_code == 0, result.output
     assert "tool save_store" in result.output and "-> saved" in result.output
     assert "[passphrase redacted]" in result.output
-    assert "open sesame" not in result.output
+    # The banner shows the configured demo passphrase; the tool-call lines must not.
+    tool_lines = [line for line in result.output.splitlines() if "tool verify_passphrase" in line]
+    assert tool_lines and all("open sesame" not in line for line in tool_lines)
 
 
 def test_missing_key_without_demo_explains_and_exits(tmp_path: Path) -> None:

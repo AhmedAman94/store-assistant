@@ -104,7 +104,9 @@ def chat(
     trace = "Logfire on" if tracing_on else "Logfire off (set LOGFIRE_TOKEN to enable)"
     console.print(
         Panel(
-            f"Model: [bold]{mode}[/]  |  {trace}  |  DB: {settings.db_path}",
+            f"Model: [bold]{mode}[/]  |  {trace}  |  DB: {settings.db_path}\n"
+            f"Demo passphrase for lookups: [bold]{escape(settings.store_passphrase)}[/]  "
+            "(set STORE_PASSPHRASE in .env to change)",
             title="Store Assistant",
         )
     )
